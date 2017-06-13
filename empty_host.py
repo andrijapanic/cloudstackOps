@@ -25,16 +25,17 @@ class Args:
     """ Argument class """
     def __init__(self):
         argparser = ArgumentParser()
-        argparser.add_argument("-z", "--zone", dest="zone", help="Cosmic/CloudStack zone", required=True,
+        arggroup = argparser.add_mutually_exclusive_group()
+        argparser.add_argument("-c", "--config-profile", dest="zone", help="Cosmic/CloudStack zone", required=True,
                                action="store")
         argparser.add_argument("-d", "--disablehost", dest="disablehost", help="Disable 'from' host", default=False,
                                action="store_true")
-        argparser.add_argument("-c", "--config", dest="conf", help="Alternate config file", action="store",
-                               default="~/.cloudmonkey/config")
         argparser.add_argument("-f", "--from", dest="src", help="From hypervisor", required=True, action="store")
         argparser.add_argument("-t", "--to", dest="dst", help="To hypervisor", required=True, action="store")
+        argparser.add_argument("--config", dest="conf", help="Alternate config file", action="store", default="~/.cloudmonkey/config")
         argparser.add_argument("--exec", dest="DRYRUN", help="Execute migration", default=True, action="store_false")
-        argparser.add_argument("--domain", dest="domain", help="Only migrate VM's from domain", action="store")
+        arggroup.add_argument("--domain", dest="domain", help="Only migrate VM's from domain", action="store")
+        arggroup.add_argument("--exceptdomain", dest="excdomain", help="Migrate all VM's except domain", action="store")
         self.__args = argparser.parse_args()
 
     def __getitem__(self, item):
@@ -75,11 +76,6 @@ class Cosmic(object):
         self.__srchost = value
         if len(self.hosts) == 0:
             self.getHosts()
-        if value in self.hosts:
-            src_hostid = self.hosts[value]['id']
-            self.__getVirtualMachines(hostid=src_hostid)
-            self.__getSystemVms(hostid=src_hostid)
-            self.__getRouters(hostid=src_hostid)
 
     @property
     def dsthost(self):
@@ -96,14 +92,14 @@ class Cosmic(object):
         for host in hosts['host']:
             self.hosts[host['name']] = host
 
-    def __getDomains(self, domain=None):
-        self.domains = self.__cs.listDomains(name=domain, listall=True)
-        if 'domain' not in self.domains:
-            print('Domain %s not found, exiting..' % domain)
-            sys.exit(0)
+    def __getDomains(self):
+        self.domains = self.__cs.listDomains(listall=True)
 
-    def __getVirtualMachines(self, hostid=None, domainid=''):
-        self.virtualmachines = self.__cs.listVirtualMachines(hostid=hostid, domainid=domainid, listall=True)
+    def __getVirtualMachines(self, hostid=None):
+        self.virtualmachines = self.__cs.listVirtualMachines(hostid=hostid, listall=True)
+        projectvms = self.__cs.listVirtualMachines(hostid=hostid, listall=True, projectid=-1)
+        if len(projectvms) > 0:
+            self.virtualmachines['virtualmachine'] += projectvms['virtualmachine']
         if 'virtualmachine' in self.virtualmachines:
             self.virtualmachines['virtualmachine'] = sorted(self.virtualmachines['virtualmachine'],
                                                             key=operator.itemgetter('memory'), reverse=True)
@@ -141,9 +137,10 @@ class Cosmic(object):
         src_hostid = self.hosts[srchost]['id']
         dst_hostid = self.hosts[dsthost]['id']
 
-        if 'domain' in kwargs and kwargs['domain'] is not None:
-            self.__getDomains(domain=kwargs['domain'])
-            self.__getVirtualMachines(hostid=src_hostid, domainid=self.domains['domain'][0]['id'])
+        self.__getDomains()
+        self.__getSystemVms(hostid=src_hostid)
+        self.__getRouters(hostid=src_hostid)
+        self.__getVirtualMachines(hostid=src_hostid)
 
         if self.disablehost and ('virtualmachine' in self.virtualmachines or 'systemvm' in self.systemvms or
                                          'router' in self.routervms):
@@ -153,6 +150,13 @@ class Cosmic(object):
         if 'virtualmachine' in self.virtualmachines:
             print("Starting migration of user VM:")
             for host in self.virtualmachines['virtualmachine']:
+                if 'domain' in kwargs and kwargs['domain']:
+                    if host['domain'] != kwargs['domain']:
+                        continue
+                if 'excdomain' in kwargs and kwargs['excdomain']:
+                    if host['domain'] == kwargs['excdomain']:
+                        continue
+
                 print("    UUID: %s  Name: %-16s [%-24s] %8iMb  State: " % (host['id'], host['instancename'],
                                                                             host['name'][:24], host['memory']),
                                                                             end='')
@@ -211,6 +215,7 @@ def main():
     srchv = args['src']
     dsthv = args['dst']
     domain = args['domain']
+    excdomain = args['excdomain']
 
     config = ConfigParser.ConfigParser()
     config.read(os.path.expanduser(configfile))
@@ -227,7 +232,7 @@ def main():
     if dsthv not in cosmic:
         print("Hypervisor %s not found, exiting..." % dsthv)
         sys.exit(1)
-    cosmic.migrate(srchost=srchv, dsthost=dsthv, domain=domain, DRYRUN=args['DRYRUN'])
+    cosmic.migrate(srchost=srchv, dsthost=dsthv, domain=domain, excdomain=excdomain, DRYRUN=args['DRYRUN'])
 
 if __name__ == "__main__":
     warnings.filterwarnings("ignore")
