@@ -2,12 +2,17 @@
 
 from __future__ import print_function
 from argparse import ArgumentParser
-import ConfigParser
 import operator
 import warnings
+import signal
 import time
 import sys
 import os
+
+try:
+    import configparser as ConfigParser
+except ImportError:
+    import ConfigParser
 
 try:
     import cs
@@ -24,11 +29,12 @@ class Args:
                                action="store")
         argparser.add_argument("-d", "--disablehost", dest="disablehost", help="Disable 'from' host", default=False,
                                action="store_true")
-        argparser.add_argument("--exec", dest="DRYRUN", help="Execute migration", default=True, action="store_false")
-        argparser.add_argument("-f", "--from", dest="src", help="From hypervisor", required=True, action="store")
-        argparser.add_argument("-t", "--to", dest="dst", help="To hypervisor", required=True, action="store")
         argparser.add_argument("-c", "--config", dest="conf", help="Alternate config file", action="store",
                                default="~/.cloudmonkey/config")
+        argparser.add_argument("-f", "--from", dest="src", help="From hypervisor", required=True, action="store")
+        argparser.add_argument("-t", "--to", dest="dst", help="To hypervisor", required=True, action="store")
+        argparser.add_argument("--exec", dest="DRYRUN", help="Execute migration", default=True, action="store_false")
+        argparser.add_argument("--domain", dest="domain", help="Only migrate VM's from domain", action="store")
         self.__args = argparser.parse_args()
 
     def __getitem__(self, item):
@@ -39,6 +45,7 @@ class Args:
 class Cosmic(object):
     """ Cosmic class """
     __hvtypes = ('KVM', 'XenServer')
+    __quit = False
     disablehost = False
 
     def __init__(self, endpoint=None, apikey=None, secretkey=None, verify=True):
@@ -47,6 +54,7 @@ class Cosmic(object):
         self.routervms = {}
         self.systemvms = {}
         self.virtualmachines = {}
+        self.domains = {}
         self.__srchost = None
         self.__dsthost = None
 
@@ -70,9 +78,6 @@ class Cosmic(object):
         if value in self.hosts:
             src_hostid = self.hosts[value]['id']
             self.__getVirtualMachines(hostid=src_hostid)
-            if 'virtualmachine' in self.virtualmachines:
-                self.virtualmachines['virtualmachine'] = sorted(self.virtualmachines['virtualmachine'],
-                                                                key=operator.itemgetter('memory'), reverse=True)
             self.__getSystemVms(hostid=src_hostid)
             self.__getRouters(hostid=src_hostid)
 
@@ -91,8 +96,17 @@ class Cosmic(object):
         for host in hosts['host']:
             self.hosts[host['name']] = host
 
-    def __getVirtualMachines(self, hostid=None):
-        self.virtualmachines = self.__cs.listVirtualMachines(hostid=hostid, listall=True)
+    def __getDomains(self, domain=None):
+        self.domains = self.__cs.listDomains(name=domain, listall=True)
+        if 'domain' not in self.domains:
+            print('Domain %s not found, exiting..' % domain)
+            sys.exit(0)
+
+    def __getVirtualMachines(self, hostid=None, domainid=''):
+        self.virtualmachines = self.__cs.listVirtualMachines(hostid=hostid, domainid=domainid, listall=True)
+        if 'virtualmachine' in self.virtualmachines:
+            self.virtualmachines['virtualmachine'] = sorted(self.virtualmachines['virtualmachine'],
+                                                            key=operator.itemgetter('memory'), reverse=True)
 
     def __getSystemVms(self, hostid=None):
         self.systemvms = self.__cs.listSystemVms(hostid=hostid, listall=True)
@@ -100,7 +114,10 @@ class Cosmic(object):
     def __getRouters(self, hostid=None):
         self.routervms = self.__cs.listRouters(hostid=hostid, listall=True)
 
-    def __waitforjob(self, jobid=None, retries=60):
+    def __sighandler(self, signal, frame):
+        self.__quit = True
+
+    def __waitforjob(self, jobid=None, retries=120):
         while True:
             if retries < 0:
                 break
@@ -116,11 +133,18 @@ class Cosmic(object):
             time.sleep(1)
         return False
 
-    def migrate(self, srchost=None, dsthost=None, DRYRUN=True):
+    def migrate(self, srchost=None, dsthost=None, DRYRUN=True, **kwargs):
         """ Migrate VMS to another HV """
+
+        signal.signal(signal.SIGINT, self.__sighandler)
 
         src_hostid = self.hosts[srchost]['id']
         dst_hostid = self.hosts[dsthost]['id']
+
+        if 'domain' in kwargs and kwargs['domain'] is not None:
+            self.__getDomains(domain=kwargs['domain'])
+            self.__getVirtualMachines(hostid=src_hostid, domainid=self.domains['domain'][0]['id'])
+
         if self.disablehost and ('virtualmachine' in self.virtualmachines or 'systemvm' in self.systemvms or
                                          'router' in self.routervms):
             # Only disable host if we have machines to migrate
@@ -141,34 +165,42 @@ class Cosmic(object):
                         print("Migration unsuccessful!")
                 else:
                     print('DRYRUN')
+                if self.__quit:
+                    sys.exit(0)
 
-        if 'systemvm' in self.systemvms:
-            print("Starting migration of system VM:")
-            for host in self.systemvms['systemvm']:
-                print("    UUID: %s  Name: %-16s State: " % (host['id'], host['name']), end='')
-                sys.stdout.flush()
-                if not DRYRUN:
-                    jobid = self.__cs.migrateSystemVm(hostid=dst_hostid, virtualmachineid=host['id'])
-                    if self.__waitforjob(jobid['jobid']):
-                        print("Migration successful")
+        # System VM's are not bound to domain, so skip if domain is given
+        if 'domain' in kwargs and kwargs['domain'] is None:
+            if 'systemvm' in self.systemvms:
+                print("Starting migration of system VM:")
+                for host in self.systemvms['systemvm']:
+                    print("    UUID: %s  Name: %-16s State: " % (host['id'], host['name']), end='')
+                    sys.stdout.flush()
+                    if not DRYRUN:
+                        jobid = self.__cs.migrateSystemVm(hostid=dst_hostid, virtualmachineid=host['id'])
+                        if self.__waitforjob(jobid['jobid']):
+                            print("Migration successful")
+                        else:
+                            print("Migration unsuccessful!")
                     else:
-                        print("Migration unsuccessful!")
-                else:
-                    print('DRYRUN')
+                        print('DRYRUN')
+                    if self.__quit:
+                        sys.exit(0)
 
-        if 'router' in self.routervms:
-            print("Starting migration of router VM:")
-            for host in self.routervms['router']:
-                print("    UUID: %s  Name: %-16s State: " % (host['id'], host['name']), end='')
-                sys.stdout.flush()
-                if not DRYRUN:
-                    jobid = self.__cs.migrateSystemVm(hostid=dst_hostid, virtualmachineid=host['id'])
-                    if self.__waitforjob(jobid['jobid']):
-                        print("Migration successful")
+            if 'router' in self.routervms:
+                print("Starting migration of router VM:")
+                for host in self.routervms['router']:
+                    print("    UUID: %s  Name: %-16s State: " % (host['id'], host['name']), end='')
+                    sys.stdout.flush()
+                    if not DRYRUN:
+                        jobid = self.__cs.migrateSystemVm(hostid=dst_hostid, virtualmachineid=host['id'])
+                        if self.__waitforjob(jobid['jobid']):
+                            print("Migration successful")
+                        else:
+                            print("Migration unsuccessful!")
                     else:
-                        print("Migration unsuccessful!")
-                else:
-                    print('DRYRUN')
+                        print('DRYRUN')
+                    if self.__quit:
+                        sys.exit(0)
 
 def main():
     """ MAIN Loop starts here """
@@ -178,6 +210,7 @@ def main():
     zone = args['zone']
     srchv = args['src']
     dsthv = args['dst']
+    domain = args['domain']
 
     config = ConfigParser.ConfigParser()
     config.read(os.path.expanduser(configfile))
@@ -187,13 +220,14 @@ def main():
     cosmic.srchost = srchv
     cosmic.dsthost = dsthv
     cosmic.disablehost = disablehost
+
     if srchv not in cosmic:
         print("Hypervisor %s not found, exiting..." % srchv)
         sys.exit(1)
     if dsthv not in cosmic:
         print("Hypervisor %s not found, exiting..." % dsthv)
         sys.exit(1)
-    cosmic.migrate(srchost=srchv, dsthost=dsthv, DRYRUN=args['DRYRUN'])
+    cosmic.migrate(srchost=srchv, dsthost=dsthv, domain=domain, DRYRUN=args['DRYRUN'])
 
 if __name__ == "__main__":
     warnings.filterwarnings("ignore")
