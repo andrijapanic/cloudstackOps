@@ -477,6 +477,8 @@ class CloudStackOps(CloudStackOpsBase):
             host_to_find = "hv07"
         elif cluster_data[0].name.endswith("cs03"):
             host_to_find = "hv07"
+        elif cluster_data[0].name.endswith("MCCX-XEN-13"):
+            host_to_find = "mccxvm13"
         else:
             return hosts_list[0]
 

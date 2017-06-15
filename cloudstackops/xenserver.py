@@ -441,7 +441,7 @@ class xenserver(hypervisor.hypervisor):
             return self.mountpoint
         try:
             with settings(host_string=self.ssh_user + "@" + host.ipaddress):
-                command = "mount | grep storage | awk {'print $3'}"
+                command = "mount | grep sr-mount | grep \"type nfs\" | awk {'print $3'}"
                 self.mountpoint = fab.run(command)
                 print "Note: Found " + str(self.mountpoint)
                 return self.mountpoint

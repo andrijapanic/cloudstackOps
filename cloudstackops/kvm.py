@@ -84,7 +84,7 @@ class Kvm(hypervisor.hypervisor):
             return self.mountpoint
         try:
             with settings(host_string=self.ssh_user + "@" + host.ipaddress):
-                command = "sudo mount | grep storage | awk {'print $3'}"
+                command = "sudo mount | grep -E \'storage|BETA\' | awk {'print $3'}"
                 self.mountpoint = fab.run(command)
                 print "Note: Found " + str(self.mountpoint)
                 return self.mountpoint
