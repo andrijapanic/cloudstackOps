@@ -115,7 +115,7 @@ VPCUUID = c.checkCloudStackName({'csname': vpcname,
 
 if len(networkuuid) > 0:
     print "Note: Getting VPC id from network uuid %s" % networkuuid
-    network = c.listNetworks(networkuuid)[0]
+    network = c.listNetworks(networkuuid, projectParam)[0]
     VPCUUID = network.vpcid
 
 if not VPCUUID:

@@ -36,6 +36,8 @@ def handleArguments(argv):
     mysqlHost = ''
     global mysqlPasswd
     mysqlPasswd = ''
+    global isProjectVm
+    isProjectVm = 0
 
     # Usage message
     help = "Usage: ./" + os.path.basename(__file__) + ' [options] ' + \
@@ -47,6 +49,7 @@ def handleArguments(argv):
            '\n  --network-offering -o <network-offering-name>\tThe name of the VPC tier network offering.' \
            '\n  --mysqlserver -s <mysql hostname>\tSpecify MySQL server config section name' + \
            '\n  --mysqlpassword <passwd>\t\tSpecify password to cloud MySQL user' + \
+           '\n  --is-projectnetwork\t\t\tNetwork belongs to project' + \
            '\n  --debug\t\t\t\tEnable debug mode' + \
            '\n  --exec\t\t\t\tExecute for real'
 
@@ -54,7 +57,7 @@ def handleArguments(argv):
         opts, args = getopt.getopt(
             argv, "hc:n:u:v:o:t:p:s:b:", [
                 "config-profile=", "network-name=", "uuid=", "vpc-offering=", "network-offering=", "mysqlserver=",
-                "mysqlpassword=", "debug", "exec", "force"
+                "mysqlpassword=", "is-projectnetwork", "debug", "exec", "force"
             ])
     except getopt.GetoptError as e:
         print "Error: " + str(e)
@@ -78,6 +81,8 @@ def handleArguments(argv):
             mysqlHost = arg
         elif opt in ("-p", "--mysqlpassword"):
             mysqlPasswd = arg
+        elif opt in ("--is-projectnetwork"):
+            isProjectVm = 1
         elif opt in ("--debug"):
             DEBUG = 1
         elif opt in ("--exec"):
@@ -120,6 +125,11 @@ if DEBUG == 1:
 
 if DRYRUN == 1:
     print "Warning: dry-run mode is enabled, not running any commands!"
+
+if isProjectVm == 1:
+    projectParam = "true"
+else:
+    projectParam = "false"
 
 # Init CloudStackOps class
 c = cloudstackops.CloudStackOps(DEBUG, DRYRUN)
@@ -166,7 +176,7 @@ if DEBUG == 1:
     print "Network UUID: %s" % networkuuid
 
 # Get Isolated network details
-isolated_network = c.listNetworks(networkuuid)[0]
+isolated_network = c.listNetworks(networkuuid, projectParam)[0]
 isolated_network_db_id = s.get_network_db_id(networkuuid)
 
 # Pretty Slack messages

@@ -1049,10 +1049,12 @@ class CloudStackOps(CloudStackOpsBase):
         return self._callAPI(apicall)
 
     # list networks
-    def listNetworks(self, networkid):
+    def listNetworks(self, networkid, isProjectVm='false'):
         apicall = listNetworks.listNetworksCmd()
         apicall.id = networkid
         apicall.listAll = "true"
+        if isProjectVm == 'true':
+            apicall.projectid = "-1"
 
         # Call CloudStack API
         return self._callAPI(apicall)
